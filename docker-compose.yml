@@ -1,0 +1,111 @@
+#sudo docker compose build --no-cache keycloak --> build only keycloak image
+#sudo docker compose up -d --> build whole docker comppose stack
+
+version: "3.9"
+services:
+  postgres:
+    container_name: db
+    image: "postgres:16.1" #before "postgres:14.4"
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-q", "-d", "postgres", "-U", "postgr159" ]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+    volumes:
+      #- postgres_data:/var/lib/postgresql/data --> old path postgres 14
+       - postgres_16_data:/var/lib/postgresql/data
+      #- ./sql:/docker-entrypoint-initdb.d/:ro # turn it on, if you need run init DB
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+    networks:
+      - local
+    ports:
+      - "5432:5432"
+
+  pgadmin:
+    container_name: pgadmin
+    image: "dpage/pgadmin4:5.1"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: postgres@site.local
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    ports:
+      - "5050:80"
+    networks:
+      - local
+
+  keycloak:
+    container_name: keycloak
+    build:
+      context: .
+      args:
+        KEYCLOAK_VERSION: 23.0.1 #specify keycloak image version from docker build
+    command: ['start', '--optimized']
+    depends_on:
+      - "postgres"
+    environment:
+      JAVA_OPTS_APPEND: -Dkeycloak.profile.feature.upload_scripts=enabled
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD} #/run/secrets/pg_pass
+      KC_DB_URL: jdbc:postgresql://postgres/kckdb
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_HEALTH_ENABLED: 'true'
+      KC_HTTP_ENABLED: 'true'
+      KC_METRICS_ENABLED: 'true'
+      KC_HOSTNAME: example.domain.com 
+      #KC_HOSTNAME_ADMIN_URL: http://<internal domain or IP>:8180/
+      # KC_HOSTNAME_PORT: 8180 - for internal use, do not use in public
+      #KC_HOSTNAME_URL: http://keycloak.domain.local:8180
+      KC_PROXY: edge #keycloak will be running behind proxy, alternative is reencrypt where also keycloak is running on https behind proxy
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD} #/run/secrets/kck_admin
+    ports:
+      - "8180:8080"
+      - "8787:8787" # debug port
+    networks:
+      - local
+
+  app:
+    image: 'jc21/nginx-proxy-manager:latest'
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '81:81'
+      - '443:443'
+    volumes:
+      - ./data:/data
+      - ./letsencrypt:/etc/letsencrypt
+    networks:
+      - local
+  
+  ### test mongo db for book-service app
+  mongodb:
+    image: mongo:7.0.2
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: echo 'db.stats().ok' | mongosh localhost:27017/bookdb --quiet
+    networks: 
+      - local
+  ### test db
+  book-service:
+    image: ivanfranchin/book-service:1.0.0
+    container_name: book-service
+    ports:
+      - "9080:8080"
+    environment:
+      MONGODB_HOST: mongodb
+      KEYCLOAK_HOST: domain.example.com
+      #KEYCLOAK_PORT: 443
+    networks:
+      - local
+      
+networks:
+  local:
+    name: local
+    driver: bridge
+
+volumes:
+  postgres_16_data:
